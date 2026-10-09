@@ -1,0 +1,148 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    // Admins are listed by hand in the console: admins/{uid} (any document body).
+    function isAdmin() {
+      return signedIn() && exists(/databases/$(database)/documents/admins/$(request.auth.uid));
+    }
+
+    // A profile an admin created and manages on behalf of someone else.
+    function managedByMe(id) {
+      return isAdmin() &&
+        get(/databases/$(database)/documents/profiles/$(id)).data.get('managedBy', '') == request.auth.uid;
+    }
+
+    // The signed-in member, or an admin acting for one of their managed profiles.
+    function actingFor(id) {
+      return signedIn() && (request.auth.uid == id || managedByMe(id));
+    }
+
+    function interestAccepted(a, b) {
+      let ab = /databases/$(database)/documents/interests/$(a + '_' + b);
+      let ba = /databases/$(database)/documents/interests/$(b + '_' + a);
+      return (exists(ab) && get(ab).data.status == 'accepted')
+          || (exists(ba) && get(ba).data.status == 'accepted');
+    }
+
+    match /admins/{uid} {
+      allow read: if signedIn() && request.auth.uid == uid;
+      allow write: if false;
+    }
+
+    match /profiles/{uid} {
+      allow read: if signedIn();
+      allow create: if signedIn() &&
+        request.resource.data.get('photos', []).size() <= 3 &&
+        (request.auth.uid == uid ||
+          (isAdmin() && request.resource.data.get('managedBy', '') == request.auth.uid));
+      allow update: if signedIn() &&
+        request.resource.data.get('photos', []).size() <= 3 &&
+        (request.auth.uid == uid ||
+          (isAdmin() &&
+            resource.data.get('managedBy', '') == request.auth.uid &&
+            request.resource.data.get('managedBy', '') == request.auth.uid));
+      allow delete: if isAdmin() && resource.data.get('managedBy', '') == request.auth.uid;
+
+      // Phone numbers are visible only to the owner, an admin managing the profile, and members with an accepted interest.
+      match /private/{doc} {
+        allow read: if signedIn() && (actingFor(uid) || interestAccepted(request.auth.uid, uid));
+        allow write: if signedIn() && actingFor(uid);
+      }
+    }
+
+    // Admins can read the relationship collections so a managed profile's activity can be listed.
+    match /interests/{id} {
+      allow read: if signedIn() &&
+        (resource.data.fromUid == request.auth.uid || resource.data.toUid == request.auth.uid || isAdmin());
+      allow create: if signedIn() &&
+        actingFor(request.resource.data.fromUid) &&
+        id == request.resource.data.fromUid + '_' + request.resource.data.toUid &&
+        request.resource.data.status == 'pending';
+      allow update: if signedIn() &&
+        actingFor(resource.data.toUid) &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'respondedAt']) &&
+        request.resource.data.status in ['accepted', 'declined'];
+      // The sender may take back a pending or accepted interest; declined ones stay so they cannot be re-sent.
+      allow delete: if signedIn() &&
+        actingFor(resource.data.fromUid) &&
+        resource.data.status in ['pending', 'accepted'];
+    }
+
+    // Shortlists, profile views and photo requests share one pattern: doc id is "<from>_<to>".
+    match /shortlists/{id} {
+      allow read: if signedIn() &&
+        (resource.data.fromUid == request.auth.uid || resource.data.toUid == request.auth.uid || isAdmin());
+      allow create: if signedIn() && actingFor(request.resource.data.fromUid) &&
+        id == request.resource.data.fromUid + '_' + request.resource.data.toUid;
+      allow delete: if signedIn() && actingFor(resource.data.fromUid);
+    }
+
+    match /views/{id} {
+      allow read: if signedIn() &&
+        (resource.data.viewerUid == request.auth.uid || resource.data.targetUid == request.auth.uid || isAdmin());
+      allow create, update: if signedIn() && actingFor(request.resource.data.viewerUid) &&
+        id == request.resource.data.viewerUid + '_' + request.resource.data.targetUid;
+    }
+
+    match /photoRequests/{id} {
+      allow read: if signedIn() &&
+        (resource.data.fromUid == request.auth.uid || resource.data.toUid == request.auth.uid || isAdmin());
+      allow create: if signedIn() && actingFor(request.resource.data.fromUid) &&
+        id == request.resource.data.fromUid + '_' + request.resource.data.toUid;
+    }
+
+    // Free profile-view counter. Premium expiry is written only by Cloud Functions after a verified payment.
+    match /entitlements/{uid} {
+      allow read: if signedIn() && request.auth.uid == uid;
+      allow create: if signedIn() && request.auth.uid == uid &&
+        request.resource.data.keys().hasOnly(['freeViewsUsed']) &&
+        request.resource.data.freeViewsUsed == 0;
+      allow update: if signedIn() && request.auth.uid == uid &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['freeViewsUsed']) &&
+        request.resource.data.freeViewsUsed == resource.data.freeViewsUsed + 1;
+      allow delete: if false;
+    }
+
+    // Why members leave; write-only from the app, read in the console.
+    match /accountFeedback/{id} {
+      allow create: if signedIn() && request.resource.data.uid == request.auth.uid &&
+        request.resource.data.action == 'deactivate';
+      allow read, update, delete: if false;
+    }
+
+    // Payment orders are server-only (no client access).
+    match /orders/{orderId} {
+      allow read, write: if false;
+    }
+
+    // Chats are only possible between members with an accepted interest.
+    // "managers" lists admins who run one of the two profiles, so they can list those chats.
+    match /chats/{chatId} {
+      allow read: if signedIn() &&
+        (request.auth.uid in resource.data.participants ||
+          (isAdmin() && request.auth.uid in resource.data.get('managers', [])));
+      allow create: if signedIn() &&
+        request.resource.data.participants.size() == 2 &&
+        (actingFor(request.resource.data.participants[0]) || actingFor(request.resource.data.participants[1])) &&
+        interestAccepted(request.resource.data.participants[0], request.resource.data.participants[1]);
+      allow update: if signedIn() &&
+        (actingFor(resource.data.participants[0]) || actingFor(resource.data.participants[1]));
+
+      // The chat document may not exist yet, so access is derived from the "<uidA>_<uidB>" chat id.
+      match /messages/{messageId} {
+        allow read: if signedIn() &&
+          (actingFor(chatId.split('_')[0]) || actingFor(chatId.split('_')[1])) &&
+          interestAccepted(chatId.split('_')[0], chatId.split('_')[1]);
+        allow create: if signedIn() &&
+          actingFor(request.resource.data.senderUid) &&
+          request.resource.data.senderUid in chatId.split('_') &&
+          interestAccepted(chatId.split('_')[0], chatId.split('_')[1]);
+      }
+    }
+  }
+}

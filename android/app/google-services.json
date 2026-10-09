@@ -1,0 +1,39 @@
+{
+  "project_info": {
+    "project_number": "980119488592",
+    "project_id": "tamilarmatri",
+    "storage_bucket": "tamilarmatri.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:980119488592:android:8c96406a2048f06d01e955",
+        "android_client_info": {
+          "package_name": "com.thamizhi.thamizhi_inai_thedal"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "980119488592-87p66a6ed7f2c223vjsgtoiqgfmotl6p.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBHuHvfJLoKUkZw8w3val5yEHPCu2R9Hbk"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "980119488592-87p66a6ed7f2c223vjsgtoiqgfmotl6p.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
